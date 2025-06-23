@@ -1,3 +1,3 @@
-#!/bin/bash
-echo "Installing Playwright and browser..."
+#!/usr/bin/env bash
+pip install -r requirements.txt
 playwright install --with-deps
