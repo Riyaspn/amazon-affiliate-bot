@@ -1,16 +1,10 @@
 services:
-  - type: web
+  - type: cron
     name: amazon-affiliate-bot
     env: python
     plan: free
+    schedule: "30 2 * * *"  # 8:00 AM IST = 2:30 AM UTC
     buildCommand: |
       pip install -r requirements.txt
-      playwright install --with-deps
+      playwright install
     startCommand: python main.py
-    envVars:
-      - key: TELEGRAM_TOKEN
-        sync: false
-      - key: TELEGRAM_CHANNEL_ID
-        sync: false
-    autoDeploy: false
-    schedule: "30 2 * * *"  # Runs daily at 8:00 AM IST
