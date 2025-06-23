@@ -1,10 +1,10 @@
 services:
   - type: cron
     name: amazon-affiliate-bot
-    env: python
-    plan: free
-    schedule: "30 2 * * *"  # 8:00 AM IST = 2:30 AM UTC
-    buildCommand: |
-      pip install -r requirements.txt
+    runtime: python
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: |
       playwright install
-    startCommand: python main.py
+      python main.py
+    schedule: '0 2 * * *'  # IST 8:00 AM = UTC 2:00 AM
