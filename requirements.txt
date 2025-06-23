@@ -1,5 +1,4 @@
-playwright
-python-telegram-bot==20.7
-pandas
-requests
-aiohttp
+python-dotenv==1.0.1
+python-telegram-bot==20.8
+playwright==1.44.0
+pandas==2.2.2
