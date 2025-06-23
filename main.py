@@ -1,95 +1,125 @@
 import asyncio
-from playwright.async_api import async_playwright
-import csv
 import os
-from datetime import datetime
+from playwright.async_api import async_playwright
 from telegram import Bot
+from dotenv import load_dotenv
 
-# Telegram bot settings
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
-AFFILIATE_TAG = "storesofriyas-21"
+load_dotenv()
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 CATEGORIES = {
     "Electronics": "https://www.amazon.in/gp/bestsellers/electronics/",
     "Beauty": "https://www.amazon.in/gp/bestsellers/beauty/",
-    "Home_Kitchen": "https://www.amazon.in/gp/bestsellers/kitchen/",
+    "Home & Kitchen": "https://www.amazon.in/gp/bestsellers/home/",
+    "Kitchen & Dining": "https://www.amazon.in/gp/bestsellers/kitchen/"
 }
 
-async def scrape_category(category_name, url, page):
-    await page.goto(url, timeout=60000)
-    await page.wait_for_selector("div.p13n-sc-uncoverable-faceout")
+HEADERS = {
+    "Electronics": "📢 ELECTRONICS DEALS",
+    "Beauty": "📢 BEAUTY DEALS",
+    "Home & Kitchen": "📢 HOME_KITCHEN DEALS",
+    "Kitchen & Dining": "🍳 KITCHEN & DINING DEALS"
+}
 
-    items = await page.query_selector_all("div.p13n-sc-uncoverable-faceout")
-    results = []
-    seen_titles = set()
+AFFILIATE_TAG = "storesofriyas-21"
 
-    for item in items:
-        title_el = await item.query_selector("._cDEzb_p13n-sc-css-line-clamp-3_g3dy1")
-        price_el = await item.query_selector("._cDEzb_p13n-sc-price_3mJ9Z")
-        rating_el = await item.query_selector(".a-icon-alt")
-        link_el = await item.query_selector("a.a-link-normal")
+HIGH_COMM_KEYWORDS = ["cookware", "kitchen", "grinder", "fryer", "pressure cooker", "induction", "blender", "utensil"]
 
-        if not title_el or not link_el:
+
+def get_affiliate_link(url: str) -> str:
+    return url.split("/ref=")[0] + f"?tag={AFFILIATE_TAG}"
+
+
+def format_product(product, index):
+    label = "🔥 Hot Deal" if index == 0 else "⭐ Top Rated"
+    return f"""{label}
+🛒 *{product['title']}*
+💰 ₹{product['price']:,}
+⭐ {product['rating']}
+🔗 [View on Amazon]({product['link']})"""
+
+
+async def send_telegram_message(bot: Bot, text: str):
+    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
+
+
+async def scrape_category(page, category: str, url: str):
+    await page.goto(url)
+
+    content = await page.content()
+    if "no bestsellers available" in content.lower():
+        print(f"[ℹ️ Skipped] No bestsellers listed for {category}.")
+        return []
+
+    try:
+        await page.wait_for_selector("span[class*='price'], span.a-price-whole", timeout=15000)
+    except:
+        print(f"[⚠️ Timeout] Could not find prices for {category}")
+        return []
+
+    titles = await page.locator("._cDEzb_p13n-sc-css-line-clamp-3_g3dy1, .p13n-sc-truncated").all_inner_texts()
+    prices = await page.locator("span[class*='price'], span.a-price-whole").all_inner_texts()
+    ratings = await page.locator("span.a-icon-alt").all_inner_texts()
+    links = await page.locator("a.a-link-normal").evaluate_all(
+        "(elements) => elements.map(el => el.href)"
+    )
+
+    unique = {}
+    for title, price, rating, link in zip(titles, prices, ratings, links):
+        if not title or not price or not rating or not link:
+            continue
+        try:
+            clean_price = float(price.replace("₹", "").replace(",", "").strip())
+        except:
             continue
 
-        title = (await title_el.inner_text()).strip()
-        if title in seen_titles:
-            continue
-        seen_titles.add(title)
+        # Filter high-commission keywords
+        if category == "Kitchen & Dining":
+            if not any(keyword in title.lower() for keyword in HIGH_COMM_KEYWORDS):
+                continue
 
-        price = (await price_el.inner_text()).strip() if price_el else "N/A"
-        rating = (await rating_el.inner_text()).strip() if rating_el else "N/A"
-        link_suffix = await link_el.get_attribute("href")
-        asin = link_suffix.split("/dp/")[1].split("/")[0] if "/dp/" in link_suffix else None
-        affiliate_link = f"https://www.amazon.in/dp/{asin}/?tag={AFFILIATE_TAG}" if asin else "N/A"
+        base_link = get_affiliate_link(link)
+        if title not in unique:
+            unique[title] = {
+                "title": title.strip(),
+                "price": clean_price,
+                "rating": rating,
+                "link": base_link,
+            }
 
-        results.append({
-            "title": title,
-            "price": price,
-            "rating": rating,
-            "link": affiliate_link,
-        })
+    sorted_data = sorted(unique.values(), key=lambda x: x["price"], reverse=True)
+    return sorted_data[:5]
 
-        if len(results) == 5:
-            break
-
-    return sorted(results, key=lambda x: float(x["price"].replace("₹", "").replace(",", "").replace(".00", "")) if x["price"] != "N/A" else 0, reverse=True)
-
-async def send_telegram_message(bot, text):
-    await bot.send_message(chat_id=CHANNEL_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
-
-async def generate_message(category, products):
-    emojis = ["🔥 Hot Deal", "✅ Amazon’s Choice", "⭐ Top Rated", "🎯 Best Value"]
-    message = f"📢 *{category.upper().replace('_', ' ')} DEALS*\n\n"
-
-    for idx, product in enumerate(products, start=1):
-        label = emojis[idx % len(emojis)]
-        message += (
-            f"{idx}. {product['title']}\n"
-            f"💰 Price: {product['price']}\n"
-            f"⭐ Rating: {product['rating']}\n"
-            f"🔗 [View on Amazon]({product['link']})\n"
-            f"{label}\n\n"
-        )
-
-    return message
 
 async def main():
-    bot = Bot(token=TELEGRAM_TOKEN)
+    print("🔍 Starting Amazon Affiliate Bot...")
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
 
-        context = await browser.new_context()
-        page = await context.new_page()
-
-        for category, url in CATEGORIES.items():
+        for cat, url in CATEGORIES.items():
             print(f"Scraping: {url}")
-            products = await scrape_category(category, url, page)
-            message = await generate_message(category, products)
-            await send_telegram_message(bot, message)
+            try:
+                data = await scrape_category(page, cat, url)
+            except Exception as e:
+                print(f"❌ Error scraping {cat}: {e}")
+                continue
+
+            if not data:
+                print(f"[ℹ️ Skipped] No data returned for {cat}")
+                continue
+
+            header = f"*{HEADERS[cat]}*"
+            messages = [header] + [format_product(product, i) for i, product in enumerate(data)]
+            await send_telegram_message(bot, "\n\n".join(messages))
 
         await browser.close()
+    print("✅ Done.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
