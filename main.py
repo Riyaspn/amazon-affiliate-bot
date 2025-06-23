@@ -78,7 +78,8 @@ async def generate_message(category, products):
 async def main():
     bot = Bot(token=TELEGRAM_TOKEN)
     async with async_playwright() as p:
-        browser = await p.firefox.launch(headless=True)
+        browser = await p.chromium.launch(headless=True)
+
         context = await browser.new_context()
         page = await context.new_page()
 
