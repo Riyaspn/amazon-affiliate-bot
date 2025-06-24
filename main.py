@@ -1,8 +1,10 @@
 import asyncio
 import os
+from datetime import datetime
 from playwright.async_api import async_playwright
 from telegram import Bot
 from dotenv import load_dotenv
+from difflib import SequenceMatcher
 
 load_dotenv()
 
@@ -19,17 +21,20 @@ CATEGORIES = {
 HEADERS = {
     "Electronics": "📢 ELECTRONICS DEALS",
     "Beauty": "📢 BEAUTY DEALS",
-    "Home & Kitchen": "📢 HOME_KITCHEN DEALS",
+    "Home & Kitchen": "📢 HOME & KITCHEN DEALS",
     "Kitchen & Dining": "🍳 KITCHEN & DINING DEALS"
 }
 
 AFFILIATE_TAG = "storesofriyas-21"
-
 HIGH_COMM_KEYWORDS = ["cookware", "kitchen", "grinder", "fryer", "pressure cooker", "induction", "blender", "utensil"]
 
 
 def get_affiliate_link(url: str) -> str:
     return url.split("/ref=")[0] + f"?tag={AFFILIATE_TAG}"
+
+
+def similar_title(a, b):
+    return SequenceMatcher(None, a.lower(), b.lower()).ratio() > 0.8
 
 
 def format_product(product, index):
@@ -41,55 +46,73 @@ def format_product(product, index):
 🔗 [View on Amazon]({product['link']})"""
 
 
+def get_template_prefix():
+    weekday = datetime.now().weekday()
+    if weekday in [0, 2, 4]:  # Mon, Wed, Fri
+        return "🗓️ *Top 5 Per Category*"
+    elif weekday in [1, 3, 5]:  # Tue, Thu, Sat
+        return "🚀 *Flash Deals & Top Clicked*"
+    else:  # Sunday
+        return "🛍️ *Weekly Top Picks & Combo Deals*"
+
+
 async def send_telegram_message(bot: Bot, text: str):
     await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
 
 
 async def scrape_category(page, category: str, url: str):
+    print(f"Scraping: {url}")
     await page.goto(url)
-
-    content = await page.content()
-    if "no bestsellers available" in content.lower():
-        print(f"[ℹ️ Skipped] No bestsellers listed for {category}.")
-        return []
+    await page.wait_for_timeout(2000)
 
     try:
-        await page.wait_for_selector("span[class*='price'], span.a-price-whole", timeout=15000)
+        await page.wait_for_selector("div.p13n-sc-uncoverable-faceout", timeout=15000)
     except:
-        print(f"[⚠️ Timeout] Could not find prices for {category}")
+        print(f"[⚠️ Timeout] No product containers found for {category}")
         return []
 
-    titles = await page.locator("._cDEzb_p13n-sc-css-line-clamp-3_g3dy1, .p13n-sc-truncated").all_inner_texts()
-    prices = await page.locator("span[class*='price'], span.a-price-whole").all_inner_texts()
-    ratings = await page.locator("span.a-icon-alt").all_inner_texts()
-    links = await page.locator("a.a-link-normal").evaluate_all(
-        "(elements) => elements.map(el => el.href)"
-    )
+    cards = await page.locator("div.p13n-sc-uncoverable-faceout").element_handles()
+    print(f"[✓] Found {len(cards)} product containers for {category}")
 
-    unique = {}
-    for title, price, rating, link in zip(titles, prices, ratings, links):
-        if not title or not price or not rating or not link:
-            continue
+    products = []
+    seen_titles = []
+
+    for card in cards:
         try:
-            clean_price = float(price.replace("₹", "").replace(",", "").strip())
-        except:
-            continue
+            title_el = await card.query_selector("div[class*='line-clamp']")
+            price_el = await card.query_selector("span[class*='price']")
+            rating_el = await card.query_selector("span.a-icon-alt")
+            link_el = await card.query_selector("a.a-link-normal")
 
-        # Filter high-commission keywords
-        if category == "Kitchen & Dining":
-            if not any(keyword in title.lower() for keyword in HIGH_COMM_KEYWORDS):
+            title = (await title_el.inner_text()).strip() if title_el else None
+            price_raw = (await price_el.inner_text()).strip() if price_el else None
+            rating = (await rating_el.inner_text()).strip() if rating_el else "No rating"
+            href = (await link_el.get_attribute("href")).strip() if link_el else None
+
+            if not title or not price_raw or not href:
                 continue
 
-        base_link = get_affiliate_link(link)
-        if title not in unique:
-            unique[title] = {
-                "title": title.strip(),
-                "price": clean_price,
-                "rating": rating,
-                "link": base_link,
-            }
+            price = float(price_raw.replace("₹", "").replace(",", ""))
+            full_link = get_affiliate_link("https://www.amazon.in" + href)
 
-    sorted_data = sorted(unique.values(), key=lambda x: x["price"], reverse=True)
+            if any(similar_title(title, t) for t in seen_titles):
+                continue
+            seen_titles.append(title)
+
+            if category == "Kitchen & Dining" and not any(k in title.lower() for k in HIGH_COMM_KEYWORDS):
+                continue
+
+            products.append({
+                "title": title,
+                "price": price,
+                "rating": rating,
+                "link": full_link
+            })
+
+        except Exception as e:
+            print(f"[⚠️ Skipped One] Error: {e}")
+
+    sorted_data = sorted(products, key=lambda x: x["price"], reverse=True)
     return sorted_data[:5]
 
 
@@ -100,6 +123,9 @@ async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
+
+        intro = get_template_prefix()
+        await send_telegram_message(bot, intro)
 
         for cat, url in CATEGORIES.items():
             print(f"Scraping: {url}")
