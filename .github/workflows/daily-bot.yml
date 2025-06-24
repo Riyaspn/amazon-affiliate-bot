@@ -1,8 +1,11 @@
-name: 🕗 Daily Amazon Affiliate Bot
+name: Daily Amazon Affiliate Bot
 
 on:
   schedule:
-    - cron: '30 2 * * *'  # Runs daily at 8:00 AM IST (2:30 AM UTC)
+    # 8 AM IST (02:30 UTC)
+    - cron: '30 2 * * *'
+    # 8 PM IST (14:30 UTC)
+    - cron: '30 14 * * *'
   workflow_dispatch:
 
 jobs:
@@ -10,24 +13,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📥 Checkout repo
-        uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
 
-      - name: 📦 Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
-      - name: 🎭 Install Playwright Browsers
-        run: playwright install
-
-      - name: 🚀 Run Amazon Affiliate Bot
-        run: python main.py
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    - name: Run bot
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: python main.py
