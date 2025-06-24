@@ -14,4 +14,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install --with-deps chromium
 
 # Run the bot
-CMD ["python", "main.py"]
+CMD ["sh", "-c", "python main.py && exit 0"]
