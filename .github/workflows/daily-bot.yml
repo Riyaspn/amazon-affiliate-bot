@@ -32,4 +32,4 @@ jobs:
           playwright install
 
       - name: Run Price Drop Bot
-        run: python main.py
+        run: python scripts/main.py
