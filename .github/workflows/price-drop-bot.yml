@@ -29,5 +29,6 @@ jobs:
           echo TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }} >> .env
           echo TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }} >> .env
 
-      - name: Run the price drop alert bot
-        run: python price_drop_alert.py
+      - name: Run Price Drop Alert Bot
+        run: python scripts/price_drop_alert.py
+
