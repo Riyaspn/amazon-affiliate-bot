@@ -2,9 +2,9 @@ name: Amazon Price Drop Bot
 
 on:
   schedule:
-    # 8:00 AM IST = 2:30 AM UTC
+    # 🕗 8:00 AM IST = 2:30 AM UTC → Morning session
     - cron: '30 2 * * *'
-    # 8:30 PM IST = 3:00 PM UTC
+    # 🌆 8:30 PM IST = 3:00 PM UTC → Evening session
     - cron: '0 15 * * *'
   workflow_dispatch:
 
@@ -31,5 +31,29 @@ jobs:
           pip install -r requirements.txt
           playwright install
 
-      - name: Run Price Drop Bot
-        run: python scripts/main.py
+      - name: Determine run mode
+        id: mode
+        run: |
+          HOUR=$(date -u +"%H")
+          if [ "$HOUR" -eq 2 ]; then
+            echo "mode=morning" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=evening" >> "$GITHUB_OUTPUT"
+
+      - name: Download morning data (if evening)
+        if: steps.mode.outputs.mode == 'evening'
+        uses: actions/download-artifact@v4
+        with:
+          name: daily-products
+          path: scripts
+
+      - name: Run the bot
+        run: |
+          python scripts/main.py ${{ steps.mode.outputs.mode }}
+
+      - name: Upload morning data (if morning)
+        if: steps.mode.outputs.mode == 'morning'
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-products
+          path: scripts/daily_products.json

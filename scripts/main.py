@@ -1,151 +1,209 @@
-import asyncio
 import os
+import sys
+import json
+import re
+import requests
 from datetime import datetime
-from playwright.async_api import async_playwright
-from telegram import Bot
-from dotenv import load_dotenv
-from difflib import SequenceMatcher
+from playwright.sync_api import sync_playwright
 
-load_dotenv()
-
+# === CONFIG ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHAT_ID")
+AFFILIATE_TAG = "storesofriyas-21"
+SCRIPT_DIR = os.path.dirname(__file__)
+DAILY_FILE = os.path.join(SCRIPT_DIR, "daily_products.json")
 
-CATEGORIES = {
+CATEGORY_URLS = {
     "Electronics": "https://www.amazon.in/gp/bestsellers/electronics/",
     "Beauty": "https://www.amazon.in/gp/bestsellers/beauty/",
-    "Home & Kitchen": "https://www.amazon.in/gp/bestsellers/home/",
-    "Kitchen & Dining": "https://www.amazon.in/gp/bestsellers/kitchen/"
+    "Home_Kitchen": "https://www.amazon.in/gp/bestsellers/kitchen/"
 }
 
-HEADERS = {
-    "Electronics": "📢 ELECTRONICS DEALS",
-    "Beauty": "📢 BEAUTY DEALS",
-    "Home & Kitchen": "📢 HOME & KITCHEN DEALS",
-    "Kitchen & Dining": "🍳 KITCHEN & DINING DEALS"
-}
+# === UTILS ===
 
-AFFILIATE_TAG = "storesofriyas-21"
-HIGH_COMM_KEYWORDS = ["cookware", "kitchen", "grinder", "fryer", "pressure cooker", "induction", "blender", "utensil"]
+def simplify_title(title):
+    title = re.sub(r"\(.*?\)", "", title)
+    title = re.sub(r"[^a-zA-Z0-9 ]", "", title)
+    return title.lower().strip()
 
-
-def get_affiliate_link(url: str) -> str:
-    return url.split("/ref=")[0] + f"?tag={AFFILIATE_TAG}"
-
-
-def similar_title(a, b):
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio() > 0.8
-
-
-def format_product(product, index):
-    label = "🔥 Hot Deal" if index == 0 else "⭐ Top Rated"
-    return f"""{label}
-🛒 *{product['title']}*
-💰 ₹{product['price']:,}
-⭐ {product['rating']}
-🔗 [View on Amazon]({product['link']})"""
-
-
-def get_template_prefix():
-    weekday = datetime.now().weekday()
-    if weekday in [0, 2, 4]:  # Mon, Wed, Fri
-        return "🗓️ *Top 5 Per Category*"
-    elif weekday in [1, 3, 5]:  # Tue, Thu, Sat
-        return "🚀 *Flash Deals & Top Clicked*"
-    else:  # Sunday
-        return "🛍️ *Weekly Top Picks & Combo Deals*"
-
-
-async def send_telegram_message(bot: Bot, text: str):
-    await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=text, parse_mode="Markdown", disable_web_page_preview=True)
-
-
-async def scrape_category(page, category: str, url: str):
-    print(f"Scraping: {url}")
-    await page.goto(url)
-    await page.wait_for_timeout(2000)
-
+def add_label(product):
+    labels = []
+    price_text = product['price'].replace("₹", "").replace(",", "").strip()
     try:
-        await page.wait_for_selector("div.p13n-sc-uncoverable-faceout", timeout=15000)
+        price = float(price_text)
+        if price > 10000:
+            labels.append("💸 Premium Pick")
     except:
-        print(f"[⚠️ Timeout] No product containers found for {category}")
-        return []
+        pass
 
-    cards = await page.locator("div.p13n-sc-uncoverable-faceout").element_handles()
-    print(f"[✓] Found {len(cards)} product containers for {category}")
-
-    products = []
-    seen_titles = []
-
-    for card in cards:
+    if product['rating'] != "N/A":
         try:
-            title_el = await card.query_selector("div[class*='line-clamp']")
-            price_el = await card.query_selector("span[class*='price']")
-            rating_el = await card.query_selector("span.a-icon-alt")
-            link_el = await card.query_selector("a.a-link-normal")
+            rating = float(product['rating'].split()[0])
+            if rating >= 4.5:
+                labels.append("🌟 Top Rated")
+        except:
+            pass
 
-            title = (await title_el.inner_text()).strip() if title_el else None
-            price_raw = (await price_el.inner_text()).strip() if price_el else None
-            rating = (await rating_el.inner_text()).strip() if rating_el else "No rating"
-            href = (await link_el.get_attribute("href")).strip() if link_el else None
+    if "off" in product['price'].lower():
+        labels.append("🎯 Best Value")
 
-            if not title or not price_raw or not href:
-                continue
+    return labels[0] if labels else "⭐ Top Rated"
 
-            price = float(price_raw.replace("₹", "").replace(",", ""))
-            full_link = get_affiliate_link("https://www.amazon.in" + href)
+def format_telegram_message(category, products, header_label):
+    message = f"{header_label}\n📢 *{category.replace('_', ' ').upper()} DEALS*\n\n"
+    for i, product in enumerate(products):
+        label = add_label(product) if i > 0 else "🔥 Hot Deal"
+        message += f"""{label}
+🛒 *{product['title']}*
+💰 {product['price']}
+⭐ {product['rating']}
+🔗 [View on Amazon]({product['link']})
 
-            if any(similar_title(title, t) for t in seen_titles):
-                continue
-            seen_titles.append(title)
+"""
+    return message.strip()
 
-            if category == "Kitchen & Dining" and not any(k in title.lower() for k in HIGH_COMM_KEYWORDS):
-                continue
+def send_to_telegram(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHANNEL_ID,
+        "text": message,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": True
+    }
+    res = requests.post(url, data=payload)
+    if res.ok:
+        print("✅ Telegram message sent.")
+    else:
+        print("❌ Telegram Error:", res.text)
 
-            products.append({
-                "title": title,
-                "price": price,
-                "rating": rating,
-                "link": full_link
-            })
+def deduplicate_variants(products):
+    seen = set()
+    deduped = []
+    for product in products:
+        key = simplify_title(product['title'])[:50]
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(product)
+    return deduped
 
-        except Exception as e:
-            print(f"[⚠️ Skipped One] Error: {e}")
+# === SCRAPER ===
 
-    sorted_data = sorted(products, key=lambda x: x["price"], reverse=True)
-    return sorted_data[:5]
+def scrape_top_30(category_name, url):
+    print(f"🔍 Scraping: {category_name}")
+    with sync_playwright() as p:
+        browser = p.firefox.launch(headless=True)
+        page = browser.new_page()
+        page.goto(url, timeout=60000)
+        page.wait_for_selector("div.p13n-sc-uncoverable-faceout")
 
+        cards = page.query_selector_all("div.p13n-sc-uncoverable-faceout")
+        products = []
+        seen_asins = set()
 
-async def main():
-    print("🔍 Starting Amazon Affiliate Bot...")
-    bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-
-        intro = get_template_prefix()
-        await send_telegram_message(bot, intro)
-
-        for cat, url in CATEGORIES.items():
-            print(f"Scraping: {url}")
+        for card in cards:
             try:
-                data = await scrape_category(page, cat, url)
+                title_elem = card.query_selector("._cDEzb_p13n-sc-css-line-clamp-4_2q2cc") or \
+                             card.query_selector("._cDEzb_p13n-sc-css-line-clamp-3_g3dy1")
+                if not title_elem:
+                    continue
+
+                title = title_elem.inner_text().strip()
+
+                link_elem = card.query_selector("a")
+                link = link_elem.get_attribute("href")
+                asin_match = re.search(r"/dp/([A-Z0-9]{10})", link)
+                if not asin_match:
+                    continue
+                asin = asin_match.group(1)
+                if asin in seen_asins:
+                    continue
+                seen_asins.add(asin)
+
+                full_link = f"https://www.amazon.in/dp/{asin}?tag={AFFILIATE_TAG}&th=1"
+
+                price_elem = card.query_selector("._cDEzb_p13n-sc-price_3mJ9Z")
+                price = price_elem.inner_text().strip() if price_elem else "N/A"
+
+                rating_elem = card.query_selector("span.a-icon-alt")
+                rating = rating_elem.inner_text().strip() if rating_elem else "N/A"
+
+                products.append({
+                    "title": title,
+                    "link": full_link,
+                    "price": price,
+                    "rating": rating
+                })
+
+                if len(products) >= 40:
+                    break
+
             except Exception as e:
-                print(f"❌ Error scraping {cat}: {e}")
+                print(f"⚠️ Product parse error: {e}")
                 continue
 
-            if not data:
-                print(f"[ℹ️ Skipped] No data returned for {cat}")
-                continue
+        browser.close()
+        return products
 
-            header = f"*{HEADERS[cat]}*"
-            messages = [header] + [format_product(product, i) for i, product in enumerate(data)]
-            await send_telegram_message(bot, "\n\n".join(messages))
+# === RUN MODES ===
 
-        await browser.close()
-    print("✅ Done.")
+def morning_run():
+    all_data = {}
+    header_label = choose_message_header("morning")
+    send_to_telegram(header_label)  # Send once before categories
+    for category, url in CATEGORY_URLS.items():
+        raw = scrape_top_30(category, url)
+        clean = deduplicate_variants(raw)
+        all_data[category] = clean[:10]
+        top_5 = clean[:5]
+        msg = format_telegram_message(category, top_5, "")
+        send_to_telegram(msg)
 
+    with open(DAILY_FILE, "w", encoding="utf-8") as f:
+        json.dump(all_data, f, indent=2)
+    print("🗂️ Saved daily_products.json")
+
+def evening_run():
+    if not os.path.exists(DAILY_FILE):
+        print("⚠️ No morning data found.")
+        return
+    with open(DAILY_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    header_label = choose_message_header("evening")
+    send_to_telegram(header_label)  # Send once before categories
+
+    for category, products in data.items():
+        next_5 = products[5:10]
+        if not next_5:
+            continue
+        msg = format_telegram_message(category, next_5, "")
+        send_to_telegram(msg)
+
+# === HEADER MESSAGE STYLE ===
+
+def choose_message_header(mode):
+    today = datetime.utcnow().weekday()  # Monday=0 ... Sunday=6
+    if mode == "morning":
+        if today in [0, 2, 4]:   # Mon, Wed, Fri
+            return "✅ *Top 5 Per Category*"
+        elif today == 6:        # Sunday
+            return "🛍️ *Weekly Combo Picks*"
+    return "🚀 *Evening Picks*"
+
+# === ENTRY POINT ===
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) < 2:
+        print("❗ Usage: python main.py [morning|evening]")
+        sys.exit()
+
+    mode = sys.argv[1].lower()
+    if mode == "morning":
+        print("🌅 Morning session started...")
+        morning_run()
+    elif mode == "evening":
+        print("🌇 Evening session started...")
+        evening_run()
+    else:
+        print("❗ Invalid mode. Use 'morning' or 'evening'")
