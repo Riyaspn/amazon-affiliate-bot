@@ -6,38 +6,47 @@ from dotenv import load_dotenv
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from telegram import Bot
 
-# === CONFIG ===
 load_dotenv()
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 AFFILIATE_TAG = "storesofriyas-21"
-DATA_FILE = "product_prices.csv"
 PRODUCTS = [
     "B0DGHYDZR9", "B0DGJ8SYS6", "B0DGJ1BY5T", "B0DGJBN8TV", "B0DGHTBK1Q",
     "B0DGHQ717F", "B0DGJ8JQZD", "B0DGJGRDDS", "B0DGJHBX5Y", "B0DGJ58SMG",
     "B0DGJ54GQW", "B0DGJ63CXK", "B07Y5D31DB"
 ]
-
-# === SCRAPER ===
+DATA_FILE = "product_prices.csv"
 
 async def fetch_product_data(page, asin):
     url = f"https://www.amazon.in/dp/{asin}?tag={AFFILIATE_TAG}"
     print(f"🔍 Visiting: {url}")
-    try:
-        await page.goto(url, timeout=30000)
-        await page.wait_for_selector("span.a-price-whole", timeout=15000)
 
-        # Title
-        title = await page.locator("#productTitle").text_content()
-        title = title.strip() if title else "Unknown Product"
+    try:
+        await page.goto(url, timeout=40000)
+        await page.wait_for_selector("span.a-price-whole", timeout=20000)
+
+        # Title (get first visible one)
+        titles = await page.locator("#productTitle").all()
+        title = ""
+        for t in titles:
+            content = await t.text_content()
+            if content and content.strip():
+                title = content.strip()
+                break
+        if not title:
+            title = "Unknown Product"
+
+        # Image
+        image = await page.locator("#landingImage").get_attribute("src")
 
         # Price
         price_text = await page.locator("span.a-price-whole").first.text_content()
         price_text = re.sub(r"[^\d.]", "", price_text or "")
         price = float(price_text) if price_text else None
-
-        # Image
-        image = await page.locator("#landingImage").get_attribute("src")
+        if price is None:
+            print(f"[⚠️ Skipped] Could not extract valid price for ASIN {asin}")
+            return None
 
         return {
             "asin": asin,
@@ -52,8 +61,6 @@ async def fetch_product_data(page, asin):
     except Exception as e:
         print(f"[❌ Error] {asin}: {e}")
     return None
-
-# === PRICE STORAGE ===
 
 def load_previous_prices():
     prices = {}
@@ -76,8 +83,6 @@ def save_current_prices(price_map):
         for asin, price in price_map.items():
             writer.writerow([asin, price])
 
-# === TELEGRAM ===
-
 async def send_price_drop_alert(bot, product, old_price):
     drop = old_price - product["price"]
     percent = (drop / old_price) * 100
@@ -96,11 +101,8 @@ async def send_price_drop_alert(bot, product, old_price):
             caption=message,
             parse_mode="Markdown"
         )
-        print(f"✅ Alert sent for {product['asin']}")
     except Exception as e:
-        print(f"[⚠️ Telegram Fail] {product['asin']}: {e}")
-
-# === MAIN LOGIC ===
+        print(f"❌ Telegram Error [{product['asin']}]: {e}")
 
 async def check_price_drops():
     print("📉 Starting Price Drop Alert...")
@@ -109,14 +111,20 @@ async def check_price_drops():
     current_prices = {}
 
     async with async_playwright() as p:
-        browser = await p.firefox.launch(headless=True)
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context()
         page = await context.new_page()
 
         for asin in PRODUCTS:
-            product = await fetch_product_data(page, asin)
-            if not product or product["price"] is None:
-                print(f"[⚠️ Skipped] Could not extract valid price for ASIN {asin}")
+            product = None
+            for attempt in range(2):  # Retry up to 2 times
+                product = await fetch_product_data(page, asin)
+                if product:
+                    break
+                else:
+                    print(f"🔁 Retrying {asin} (Attempt {attempt + 2})")
+
+            if not product:
                 continue
 
             current_prices[asin] = product["price"]
@@ -128,14 +136,12 @@ async def check_price_drops():
                 else:
                     print(f"ℹ️ No drop for {asin}. Current: ₹{product['price']} | Old: ₹{old_price}")
             else:
-                print(f"ℹ️ New product tracked: {asin}")
+                print(f"ℹ️ No previous price found for {asin}, saving now.")
 
         await browser.close()
 
     save_current_prices(current_prices)
     print("✅ Done.")
-
-# === ENTRY POINT ===
 
 if __name__ == "__main__":
     asyncio.run(check_price_drops())
